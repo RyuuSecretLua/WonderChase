@@ -2,7 +2,7 @@ local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/rel
 
 local Window = WindUI:CreateWindow({
 Title = "Wonder Chase V2 ",
-Icon = "rbxassetid://10734951847",
+Icon = "play",
 Author = "By RyuuScripts",
 Themeable = {
 Color = Color3.fromRGB(100, 150, 255)
