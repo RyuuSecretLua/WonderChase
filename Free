@@ -1,0 +1,431 @@
+loadstring([==[
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local Player = Players.LocalPlayer
+local ConfigFile = "W_BBCWonderChase.json"
+
+local PortalDatabase = {
+    {"The Next Step", Vector3.new(478.62, 314.44, -1572.88)},
+    {"Shaun The Sheep", Vector3.new(-1989.88, 22.97, 904.18)},
+    {"Horrible Science", Vector3.new(-75.88, 521.38, 1105.05)},
+    {"Super Happy", Vector3.new(-34.47, -0.66, -2940.58)},
+    {"Deadly", Vector3.new(-544.85, 842.84, -132.27)},
+    {"Doctor Who", Vector3.new(-506.64, 579.32, 414.73)},
+    {"EastEnders", Vector3.new(633.89, 176.72, -1003.40)},
+    {"Match Of The Day", Vector3.new(26.08, 976.59, -458.06)},
+    {"Wallace&Gromit", Vector3.new(-857.23, 35.49, 1706.21)},
+}
+
+local PickedItems = {}
+local TouchedStickers = {}
+local RemainingTime = 0
+local IsAtStart = false
+local Farming = false
+local AutoReplay = false
+local CountdownFinished = false
+local SelectedPortalPos = nil
+local SelectedPortalName = "SELECT OBBY"
+local ForceStopMove = false
+local AutoTPPortal = false
+
+local function GetHRP()
+    local char = Player.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function ResetInternalLoop()
+    RemainingTime = 0
+    IsAtStart = false
+    CountdownFinished = false
+    TouchedStickers = {}
+    PickedItems = {}
+end
+
+local function GetNearestPortalPos()
+    if SelectedPortalPos then return SelectedPortalPos end
+    local hrp = GetHRP()
+    if not hrp then return PortalDatabase[5][2] end
+    local nearestPos = nil
+    local minDistance = math.huge
+    for _, data in ipairs(PortalDatabase) do
+        local dist = (hrp.Position - data[2]).Magnitude
+        if dist < minDistance then
+            minDistance = dist
+            nearestPos = data[2]
+        end
+    end
+    return nearestPos
+end
+
+local function GetNearestGameStart()
+    local hrp = GetHRP()
+    if not hrp then return nil end
+    local targetFolder = Workspace:FindFirstChild("Utility") and Workspace.Utility:FindFirstChild("ObbyColliders")
+    if not targetFolder then return nil end
+    local nearest = nil
+    local minDistance = math.huge
+    for _, v in pairs(targetFolder:GetChildren()) do
+        if v.Name == "GameStart" and v:IsA("BasePart") then
+            local dist = (hrp.Position - v.Position).Magnitude
+            if dist < minDistance then
+                minDistance = dist
+                nearest = v
+            end
+        end
+    end
+    return nearest
+end
+
+local function InstantTP(pos)
+    local hrp = GetHRP()
+    if hrp then
+        hrp.Velocity = Vector3.new(0,0,0)
+        hrp.CFrame = typeof(pos) == "CFrame" and pos or CFrame.new(pos)
+    end
+end
+
+local function PhysicalMove(targetPos)
+    local hrp = GetHRP()
+    if not hrp then return end
+    local walkSpeed = 60
+    while Farming and not IsAtStart and not ForceStopMove do
+        local currentPos = hrp.Position
+        local distXZ = (Vector2.new(currentPos.X, currentPos.Z) - Vector2.new(targetPos.X, targetPos.Z)).Magnitude
+        if distXZ <= 4 then break end
+        local direction = (Vector3.new(targetPos.X, currentPos.Y, targetPos.Z) - currentPos).Unit
+        hrp.Velocity = Vector3.new(0,0,0)
+        hrp.CFrame = CFrame.new(currentPos + (direction * (walkSpeed * task.wait())))
+        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(targetPos.X, hrp.Position.Y, targetPos.Z))
+    end
+end
+
+local function LoadConfig()
+    if isfile(ConfigFile) then
+        local success, decoded = pcall(function() return HttpService:JSONDecode(readfile(ConfigFile)) end)
+        if success then return decoded end
+    end
+    return nil
+end
+
+local function SaveConfig(minV, maxV, speedV, selectedObby, replayStatus)
+    local data = {min = minV, max = maxV, speed = speedV, lastObby = selectedObby, autoReplay = replayStatus}
+    local success, encoded = pcall(function() return HttpService:JSONEncode(data) end)
+    if success then writefile(ConfigFile, encoded) end
+end
+
+local Luna = loadstring(game:HttpGet("https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/refs/heads/master/source.lua", true))()
+
+local Window = Luna:CreateWindow({
+    Name = "Wonder Chase",
+    Subtitle = "gg/fierteam",
+    LogoID = "82795327169782",
+    LoadingEnabled = true,
+    LoadingTitle = "Wonder Chase",
+    LoadingSubtitle = "Join Fier Team Server\nhttps://discord.gg/fierteam",
+    ConfigSettings = {
+        RootFolder = nil,
+        ConfigFolder = "VelocityXHub"
+    },
+    KeySystem = false,
+})
+
+local Tab = Window:CreateTab({
+    Name = "Main",
+    Icon = "home",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local MinIn, MaxIn, SpeedIn
+
+local function UpdateCurrentConfig()
+    local currentName = nil
+    for _, d in ipairs(PortalDatabase) do if d[2] == SelectedPortalPos then currentName = d[1] break end end
+    SaveConfig(MinIn and MinIn.Value or "90", MaxIn and MaxIn.Value or "100", SpeedIn and SpeedIn.Value or "1", currentName, AutoReplay)
+end
+
+local StartToggle = Tab:CreateToggle({
+    Name = "Auto Farm",
+    Description = nil,
+    CurrentValue = false,
+    Callback = function(Value)
+        Farming = Value
+        if Farming then
+            ForceStopMove = false
+            UpdateCurrentConfig()
+            StartFarmingLoop()
+        else
+            ForceStopMove = true
+        end
+    end
+}, "StartToggle")
+
+local ObbyOptions = {}
+for _, data in ipairs(PortalDatabase) do
+    table.insert(ObbyOptions, data[1])
+end
+
+local ObbyDropdown = Tab:CreateDropdown({
+    Name = "Select Obby",
+    Description = nil,
+    Options = ObbyOptions,
+    CurrentOption = {ObbyOptions[1]},
+    MultipleOptions = false,
+    SpecialType = nil,
+    Callback = function(Options)
+        local selected = Options[1] or Options
+        for _, data in ipairs(PortalDatabase) do
+            if data[1] == selected then
+                SelectedPortalPos = data[2]
+                SelectedPortalName = data[1]:upper()
+                break
+            end
+        end
+        UpdateCurrentConfig()
+    end
+}, "ObbyDropdown")
+
+SelectedPortalPos = PortalDatabase[1][2]
+SelectedPortalName = PortalDatabase[1][1]:upper()
+
+MinIn = Tab:CreateInput({
+    Name = "Min (s)",
+    Description = nil,
+    PlaceholderText = "90",
+    CurrentValue = "90",
+    Numeric = true,
+    MaxCharacters = 4,
+    Enter = false,
+    Callback = function(Text)
+        UpdateCurrentConfig()
+    end
+}, "MinIn")
+
+MaxIn = Tab:CreateInput({
+    Name = "Max (s)",
+    Description = nil,
+    PlaceholderText = "100",
+    CurrentValue = "100",
+    Numeric = true,
+    MaxCharacters = 4,
+    Enter = false,
+    Callback = function(Text)
+        UpdateCurrentConfig()
+    end
+}, "MaxIn")
+
+SpeedIn = Tab:CreateInput({
+    Name = "TP Speed (s)",
+    Description = nil,
+    PlaceholderText = "1",
+    CurrentValue = "1",
+    Numeric = true,
+    MaxCharacters = 3,
+    Enter = false,
+    Callback = function(Text)
+        UpdateCurrentConfig()
+    end
+}, "SpeedIn")
+
+local ReplayToggle = Tab:CreateToggle({
+    Name = "Auto Replay",
+    Description = nil,
+    CurrentValue = false,
+    Callback = function(Value)
+        AutoReplay = Value
+        UpdateCurrentConfig()
+    end
+}, "ReplayToggle")
+
+local AutoTPToggle = Tab:CreateToggle({
+    Name = "Auto TP Portal",
+    Description = nil,
+    CurrentValue = false,
+    Callback = function(Value)
+        AutoTPPortal = Value
+    end
+}, "AutoTPToggle")
+
+local RestartBtn = Tab:CreateButton({
+    Name = "Reset",
+    Description = nil,
+    Callback = function()
+        Farming = false
+        ForceStopMove = true
+        ResetInternalLoop()
+        StartToggle:Set(false)
+    end
+})
+
+local LBoardBtn = Tab:CreateButton({
+    Name = "Leaderboard",
+    Description = nil,
+    Callback = function()
+        local prompt = nil
+        for _, v in pairs(Workspace:GetDescendants()) do
+            if v.Name == "ClaimPrompt" and v:IsA("ProximityPrompt") then prompt = v break end
+        end
+        if prompt then fireproximityprompt(prompt) end
+    end
+})
+
+function StartFarmingLoop()
+    if not Farming then return end
+    task.spawn(function()
+        while Farming do
+            if not IsAtStart then
+                local StartPart = GetNearestGameStart()
+                if StartPart then
+                    PhysicalMove(StartPart.Position)
+                end
+                if Farming and not ForceStopMove then
+                    IsAtStart = true
+                    RemainingTime = math.random(tonumber(MinIn.Value) or 90, tonumber(MaxIn.Value) or 95)
+                    CountdownFinished = false
+                    TouchedStickers = {}
+                end
+            end
+
+            local tpS = tonumber(SpeedIn.Value) or 1
+
+            while Farming and not CountdownFinished and not ForceStopMove do
+                local targets = {}
+                local folders = {Workspace:FindFirstChild("Pickups"), Workspace:FindFirstChild("ActiveStickers"), Workspace:FindFirstChild("Stickers")}
+                for _, f in pairs(folders) do
+                    if f then
+                        for _, v in pairs(f:GetDescendants()) do
+                            if v:IsA("BasePart") and (v.Name == "Default" or v.Name == "Touch") then
+                                if not TouchedStickers[v] and not PickedItems[v] then
+                                    table.insert(targets, v)
+                                end
+                            end
+                        end
+                    end
+                end
+
+                if #targets > 0 then
+                    local hrp = GetHRP()
+                    if hrp then
+                        table.sort(targets, function(a, b)
+                            return (hrp.Position - a.Position).Magnitude < (hrp.Position - b.Position).Magnitude
+                        end)
+                        local target = targets[1]
+                        InstantTP(target.Position)
+                        if target:IsDescendantOf(Workspace:FindFirstChild("Pickups")) then
+                            PickedItems[target] = true
+                            task.delay(3, function() PickedItems[target] = nil end)
+                        else
+                            TouchedStickers[target] = true
+                        end
+                    end
+                end
+
+                task.wait(tpS)
+            end
+
+            if ForceStopMove then break end
+
+            if not CountdownFinished then
+                task.wait(0.1)
+                continue
+            end
+
+            if AutoTPPortal and Farming and not ForceStopMove then
+                local portalDelay = math.random(tonumber(MinIn.Value) or 90, tonumber(MaxIn.Value) or 95)
+                local elapsed = 0
+                while elapsed < portalDelay and Farming and not ForceStopMove do
+                    task.wait(1)
+                    elapsed = elapsed + 1
+                end
+                if Farming and not ForceStopMove then
+                    local pPos = GetNearestPortalPos()
+                    for i = 1, 5 do
+                        InstantTP(pPos)
+                        task.wait(0.1)
+                    end
+                end
+            end
+
+            if not AutoReplay then
+                Farming = false
+                StartToggle:Set(false)
+                ResetInternalLoop()
+                break
+            else
+                task.wait(5)
+                ResetInternalLoop()
+            end
+        end
+    end)
+end
+
+task.spawn(function()
+    while true do
+        if Farming and RemainingTime > 0 then
+            RemainingTime = RemainingTime - 1
+            if RemainingTime <= 0 then
+                CountdownFinished = true
+            end
+        end
+        task.wait(1)
+    end
+end)
+
+task.spawn(function()
+    while task.wait(1) do
+        if AutoReplay then
+            pcall(function()
+                local resultsUI = Player.PlayerGui.PlayerUi.Popups:FindFirstChild("ObbyResults")
+                if resultsUI and resultsUI.Visible == true then
+                    local replayBtn = resultsUI:FindFirstChild("ReplayButton")
+                    if replayBtn and replayBtn.Visible == true then
+                        task.wait(1)
+                        local pos = replayBtn.AbsolutePosition
+                        local size = replayBtn.AbsoluteSize
+                        local x = pos.X + (size.X / 2)
+                        local y = pos.Y + (size.Y / 2) + 58
+                        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                        task.wait(0.1)
+                        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+task.spawn(function()
+    local VirtualUser = game:GetService("VirtualUser")
+    Player.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
+    while task.wait(60) do
+        VirtualUser:SetKeyDown(Enum.KeyCode.Space)
+        task.wait(0.1)
+        VirtualUser:SetKeyUp(Enum.KeyCode.Space)
+    end
+end)
+
+local saved = LoadConfig()
+if saved then
+    MinIn:Set(tostring(saved.min or "90"))
+    MaxIn:Set(tostring(saved.max or "100"))
+    SpeedIn:Set(tostring(saved.speed or "1"))
+    AutoReplay = saved.autoReplay or false
+    ReplayToggle:Set(AutoReplay)
+    if saved.lastObby then
+        for _, d in ipairs(PortalDatabase) do
+            if d[1] == saved.lastObby then
+                SelectedPortalPos = d[2]
+                SelectedPortalName = d[1]:upper()
+                ObbyDropdown:Set({d[1]})
+                break
+            end
+        end
+    end
+end
+]==])()
